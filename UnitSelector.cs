@@ -1,13 +1,18 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// Allows click-and-drag selection of units, drawing selection rectangles and borders
+
+[RequireComponent(typeof(Collider2D))]
 public class UnitSelector : MonoBehaviour
 {
-    public static List<UnitMover> SelectedUnits = new List<UnitMover>();
+    private static List<UnitSelector> selectedUnitsGlobal = new List<UnitSelector>();
+    private static bool dragCleared = false;
 
-    Texture2D whiteTexture;
-    Vector3 dragStart;
-    bool isDragging, dragCleared;
+    private bool isSelected = false;
+    private Vector3 dragStart;
+    private bool isDragging = false;
+    private Texture2D whiteTexture;
 
     void OnEnable()
     {
@@ -18,136 +23,142 @@ public class UnitSelector : MonoBehaviour
 
     void Update()
     {
-        var cam = Camera.main;
+        HandleSelection();
+    }
 
-        // start drag/click
+    void OnGUI()
+    {
+        // Draw selection rectangle border when dragging
+        if (isDragging)
+        {
+            Vector3 startScreen = Camera.main.WorldToScreenPoint(dragStart);
+            Vector3 currentWorld = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            currentWorld.z = 0f;
+            Vector3 currentScreen = Camera.main.WorldToScreenPoint(currentWorld);
+
+            float x = Mathf.Min(startScreen.x, currentScreen.x);
+            float y = Screen.height - Mathf.Max(startScreen.y, currentScreen.y);
+            float width = Mathf.Abs(startScreen.x - currentScreen.x);
+            float height = Mathf.Abs(startScreen.y - currentScreen.y);
+            float thickness = 2f;
+
+            // Draw marquee
+            GUI.DrawTexture(new Rect(x, y, width, thickness), whiteTexture);
+            GUI.DrawTexture(new Rect(x, y + height - thickness, width, thickness), whiteTexture);
+            GUI.DrawTexture(new Rect(x, y, thickness, height), whiteTexture);
+            GUI.DrawTexture(new Rect(x + width - thickness, y, thickness, height), whiteTexture);
+
+            // Underline sprite borders of units in drag area
+            Vector3 dragEndWorld = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            dragEndWorld.z = 0f;
+            Vector3 boxMin = new Vector3(
+                Mathf.Min(dragStart.x, dragEndWorld.x),
+                Mathf.Min(dragStart.y, dragEndWorld.y), 0f);
+            Vector3 boxMax = new Vector3(
+                Mathf.Max(dragStart.x, dragEndWorld.x),
+                Mathf.Max(dragStart.y, dragEndWorld.y), 0f);
+
+            Vector3 pos = transform.position;
+            if (pos.x >= boxMin.x && pos.x <= boxMax.x && pos.y >= boxMin.y && pos.y <= boxMax.y)
+            {
+                var sr = GetComponent<SpriteRenderer>();
+                Bounds b = sr.bounds;
+                Vector3 worldBL = new Vector3(b.min.x, b.min.y, 0f);
+                Vector3 worldTR = new Vector3(b.max.x, b.max.y, 0f);
+                Vector3 screenBL = Camera.main.WorldToScreenPoint(worldBL);
+                Vector3 screenTR = Camera.main.WorldToScreenPoint(worldTR);
+                float sx = screenBL.x;
+                float sy = Screen.height - screenTR.y;
+                float sw = screenTR.x - screenBL.x;
+                float sh = screenTR.y - screenBL.y;
+                float t = 2f;
+
+                GUI.DrawTexture(new Rect(sx, sy, sw, t), whiteTexture);
+                GUI.DrawTexture(new Rect(sx, sy + sh - t, sw, t), whiteTexture);
+                GUI.DrawTexture(new Rect(sx, sy, t, sh), whiteTexture);
+                GUI.DrawTexture(new Rect(sx + sw - t, sy, t, sh), whiteTexture);
+            }
+        }
+
+        // Draw border around individually selected unit
+        if (isSelected)
+        {
+            var sr = GetComponent<SpriteRenderer>();
+            Bounds b = sr.bounds;
+            Vector3 worldBL = new Vector3(b.min.x, b.min.y, 0f);
+            Vector3 worldTR = new Vector3(b.max.x, b.max.y, 0f);
+            Vector3 screenBL = Camera.main.WorldToScreenPoint(worldBL);
+            Vector3 screenTR = Camera.main.WorldToScreenPoint(worldTR);
+
+            float x = screenBL.x;
+            float y = Screen.height - screenTR.y;
+            float width = screenTR.x - screenBL.x;
+            float height = screenTR.y - screenBL.y;
+            float thickness = 2f;
+
+            GUI.DrawTexture(new Rect(x, y, width, thickness), whiteTexture);
+            GUI.DrawTexture(new Rect(x, y + height - thickness, width, thickness), whiteTexture);
+            GUI.DrawTexture(new Rect(x, y, thickness, height), whiteTexture);
+            GUI.DrawTexture(new Rect(x + width - thickness, y, thickness, height), whiteTexture);
+        }
+    }
+
+    private void HandleSelection()
+    {
         if (Input.GetMouseButtonDown(0))
         {
-            dragStart = cam.ScreenToWorldPoint(Input.mousePosition);
+            dragStart = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             dragStart.z = 0f;
             isDragging = true;
             dragCleared = false;
         }
 
-        // live‐marquee: sync selection to units under rectangle
-        if (isDragging)
+        if (Input.GetMouseButtonUp(0) && isDragging)
         {
-            Vector3 cur = cam.ScreenToWorldPoint(Input.mousePosition);
-            cur.z = 0f;
-            bool shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            Vector3 dragEnd = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            dragEnd.z = 0f;
+            isDragging = false;
 
-            // only clear existing selection once if NOT holding Shift
-            if (!dragCleared && !shiftHeld)
+            bool dragSelect = Vector3.Distance(dragStart, dragEnd) >= 0.1f;
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+            if (dragSelect && !dragCleared && !shift)
             {
-                foreach (var u in SelectedUnits) u.IsSelected = false;
-                SelectedUnits.Clear();
+                foreach (var u in selectedUnitsGlobal) u.isSelected = false;
+                selectedUnitsGlobal.Clear();
                 dragCleared = true;
             }
 
-            var min = new Vector3(Mathf.Min(dragStart.x, cur.x),
-                                  Mathf.Min(dragStart.y, cur.y));
-            var max = new Vector3(Mathf.Max(dragStart.x, cur.x),
-                                  Mathf.Max(dragStart.y, cur.y));
-
-            var allUnits = Object.FindObjectsByType<UnitMover>(FindObjectsSortMode.None);
-            foreach (var u in allUnits)
-            {
-                var p = u.transform.position;
-                bool inside = p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
-                if (inside && !u.IsSelected)
-                {
-                    u.IsSelected = true;
-                    SelectedUnits.Add(u);
-                }
-                else if (!inside && u.IsSelected && !shiftHeld)
-                {
-                    u.IsSelected = false;
-                    SelectedUnits.Remove(u);
-                }
-            }
-        }
-
-        // end drag/click
-        if (Input.GetMouseButtonUp(0) && isDragging)
-        {
-            Vector3 dragEnd = cam.ScreenToWorldPoint(Input.mousePosition);
-            dragEnd.z = 0f;
-            bool dragSel = Vector3.Distance(dragStart, dragEnd) >= 0.1f;
-            bool shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-
-            if (!dragSel)
+            bool newlySelected;
+            if (!dragSelect)
             {
                 var hit = Physics2D.OverlapPoint(dragEnd);
-                if (hit != null)
-                    TrySelect(hit.GetComponent<UnitMover>(), shiftHeld);
-                else if (!shiftHeld)
-                {
-                    foreach (var u in SelectedUnits) u.IsSelected = false;
-                    SelectedUnits.Clear();
-                }
+                newlySelected = hit != null && hit.gameObject == gameObject;
             }
-
-            isDragging = false;
-        }
-    }
-
-    void OnGUI()
-    {
-        float H = Screen.height, T = 2f;
-        var cam = Camera.main;
-
-        if (isDragging)
-        {
-            var s = cam.WorldToScreenPoint(dragStart);
-            var e = cam.WorldToScreenPoint(cam.ScreenToWorldPoint(Input.mousePosition));
-            e.z = 0f;
-
-            float x = Mathf.Min(s.x, e.x);
-            float y = H - Mathf.Max(s.y, e.y);
-            float w = Mathf.Abs(e.x - s.x);
-            float h = Mathf.Abs(e.y - s.y);
-
-            GUI.DrawTexture(new Rect(x, y, w, T), whiteTexture);
-            GUI.DrawTexture(new Rect(x, y + h - T, w, T), whiteTexture);
-            GUI.DrawTexture(new Rect(x, y, T, h), whiteTexture);
-            GUI.DrawTexture(new Rect(x + w - T, y, T, h), whiteTexture);
-        }
-
-        foreach (var u in SelectedUnits)
-        {
-            var b = u.GetComponent<SpriteRenderer>().bounds;
-            var bl = cam.WorldToScreenPoint(b.min);
-            var tr = cam.WorldToScreenPoint(b.max);
-
-            float x = bl.x;
-            float y = H - tr.y;
-            float w = tr.x - bl.x;
-            float h = tr.y - bl.y;
-
-            GUI.DrawTexture(new Rect(x, y, w, T), whiteTexture);
-            GUI.DrawTexture(new Rect(x, y + h - T, w, T), whiteTexture);
-            GUI.DrawTexture(new Rect(x, y, T, h), whiteTexture);
-            GUI.DrawTexture(new Rect(x + w - T, y, T, h), whiteTexture);
-        }
-    }
-
-    void TrySelect(UnitMover u, bool additive)
-    {
-        if (u == null) return;
-        if (!u.IsSelected)
-        {
-            if (!additive)
+            else
             {
-                foreach (var o in SelectedUnits) o.IsSelected = false;
-                SelectedUnits.Clear();
+                var min = new Vector3(
+                    Mathf.Min(dragStart.x, dragEnd.x),
+                    Mathf.Min(dragStart.y, dragEnd.y));
+                var max = new Vector3(
+                    Mathf.Max(dragStart.x, dragEnd.x),
+                    Mathf.Max(dragStart.y, dragEnd.y));
+                var p = transform.position;
+                newlySelected = p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
             }
-            u.IsSelected = true;
-            SelectedUnits.Add(u);
-        }
-        else if (!additive)
-        {
-            u.IsSelected = false;
-            SelectedUnits.Remove(u);
+
+            if (newlySelected && !isSelected)
+            {
+                selectedUnitsGlobal.Add(this);
+                isSelected = true;
+            }
+            else if (!newlySelected && isSelected && !shift)
+            {
+                selectedUnitsGlobal.Remove(this);
+                isSelected = false;
+            }
         }
     }
+
+    public static List<UnitSelector> GetSelectedUnits() => selectedUnitsGlobal;
 }
