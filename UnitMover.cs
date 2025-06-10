@@ -36,7 +36,7 @@ public class UnitMover : MonoBehaviour
         tilemap = tilemap ?? Object.FindFirstObjectByType<Tilemap>();
         if (background == null || tilemap == null)
         {
-            Debug.LogError("No background SpriteRenderer or Tilemap found. Assign in Inspector.");
+            //Debug.LogError("No background SpriteRenderer or Tilemap found. Assign in Inspector.");
             enabled = false;
             return;
         }
@@ -51,23 +51,32 @@ public class UnitMover : MonoBehaviour
         destination = transform.position;
         hasDodged = false;
 
-        Pathfinder = new Pathfinder(tilemap, minBounds, maxBounds, spriteExtents);
+        Pathfinder = new Pathfinder(tilemap, minBounds, maxBounds, spriteExtents, gameObject);
     }
 
     void FixedUpdate()
     {
+        //Debug.Log($"[Mover:{name}] FixedUpdate. pos={transform.position:F2}, dest={destination:F2}, path.Count={path.Count}, targetIdx={targetIndex}");
         HandlePathMovement();
     }
 
     private void HandlePathMovement()
     {
+        // Log current state each FixedUpdate before any movement
+        //Debug.Log($"[Mover:{name}] HandlePathMovement - pos={transform.position:F2}, dest={destination:F2}, path.Count={path.Count}, targetIndex={targetIndex}");
+
+        // If we’ve run out of waypoints, rebuild the path
         if (path == null || targetIndex >= path.Count)
         {
+            //Debug.Log($"[Mover:{name}] No more waypoints — checking distance to destination: {Vector3.Distance(transform.position, destination):F2}");
             if (Vector3.Distance(transform.position, destination) > 0.01f)
             {
+                // Recompute path
                 Vector3Int start = tilemap.WorldToCell(transform.position);
                 Vector3Int goal = tilemap.WorldToCell(destination);
+                //Debug.Log($"[Mover:{name}] Rebuilding path: start={start}, goal={goal}");
                 var cellPath = Pathfinder.FindPath(start, goal);
+                //Debug.Log($"[Mover:{name}] Pathfinder returned {cellPath.Count} cells");
 
                 path.Clear();
                 foreach (var cell in cellPath)
@@ -81,36 +90,47 @@ public class UnitMover : MonoBehaviour
             }
             else
             {
+                // We're at the destination
                 return;
             }
         }
-        if (path.Count == 0) return;
 
-        Vector3 targetPos = path[targetIndex];
-        Vector3Int tCell = tilemap.WorldToCell(targetPos);
-        if (Pathfinder.IsBlocked(tCell))
+        // If we still have a waypoint, attempt to move toward it
+        if (path.Count > 0 && targetIndex < path.Count)
         {
-            UnitMover blocker = FindBlockingMover(tCell);
-            if (blocker != null)
+            Vector3 targetPos = path[targetIndex];
+            //Debug.Log($"[Mover:{name}] Moving toward waypoint[{targetIndex}] = {targetPos:F2}");
+
+            Vector3Int tCell = tilemap.WorldToCell(targetPos);
+            if (Pathfinder.IsBlocked(tCell))
             {
-                UnitMover mover = (Random.value < .5f) ? this : blocker;
-                UnitMover other = (mover == this) ? blocker : this;
-                StepAside(mover, other);
+                // Collision detected—try dodge
+                //Debug.Log($"[Mover:{name}] Waypoint cell {tCell} is blocked, attempting StepAside");
+                UnitMover blocker = FindBlockingMover(tCell);
+                if (blocker != null)
+                {
+                    UnitMover mover = (Random.value < .5f) ? this : blocker;
+                    UnitMover other = (mover == this) ? blocker : this;
+                    StepAside(mover, other);
+                }
+                return;
             }
-            return;
-        }
 
-        Vector2 curr = rb.position;
-        Vector2 toT = (Vector2)targetPos - curr;
-        float step = moveSpeed * Time.fixedDeltaTime;
-        if (toT.magnitude <= step)
-        {
-            rb.MovePosition(targetPos);
-            targetIndex++;
-        }
-        else
-        {
-            rb.MovePosition(curr + toT.normalized * step);
+            // Normal movement toward waypoint
+            Vector2 current = rb.position;
+            Vector2 toTarget = (Vector2)targetPos - current;
+            float step = moveSpeed * Time.fixedDeltaTime;
+
+            if (toTarget.magnitude <= step)
+            {
+                rb.MovePosition(targetPos);
+                //Debug.Log($"[Mover:{name}] Reached waypoint[{targetIndex}]");
+                targetIndex++;
+            }
+            else
+            {
+                rb.MovePosition(current + toTarget.normalized * step);
+            }
         }
     }
 
