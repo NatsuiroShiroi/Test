@@ -1,103 +1,122 @@
+// Pathfinder.cs
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
-public static class Pathfinder
+// A* pathfinding logic with obstacle avoidance and corner-cut prevention
+
+public class Pathfinder
 {
-    static readonly Vector3Int[] _dirs = {
-        new(1,0,0),new(-1,0,0),new(0,1,0),new(0,-1,0),
-        new(1,1,0),new(1,-1,0),new(-1,1,0),new(-1,-1,0)
+    private Tilemap tilemap;
+    private Vector3 minBounds;
+    private Vector3 maxBounds;
+    private Vector2 spriteExtents;
+
+    private static readonly Vector3Int[] directions = {
+        new Vector3Int(1, 0, 0), new Vector3Int(-1, 0, 0),
+        new Vector3Int(0, 1, 0), new Vector3Int(0, -1, 0),
+        new Vector3Int(1, 1, 0), new Vector3Int(1, -1, 0),
+        new Vector3Int(-1, 1, 0), new Vector3Int(-1,-1, 0)
     };
 
-    public static List<Vector3Int> FindPath(
-        Tilemap map,
-        Vector3Int start,
-        Vector3Int goal,
-        Vector2 spriteExtents,
-        Vector3 minBounds,
-        Vector3 maxBounds
-    )
+    public Pathfinder(Tilemap tilemap, Vector3 minBounds, Vector3 maxBounds, Vector2 spriteExtents)
     {
-        var open = new List<Node> { new(start, 0, Heur(start, goal), null) };
-        var closed = new HashSet<Vector3Int>();
+        this.tilemap = tilemap;
+        this.minBounds = minBounds;
+        this.maxBounds = maxBounds;
+        this.spriteExtents = spriteExtents;
+    }
 
-        while (open.Count > 0)
+    public List<Vector3Int> FindPath(Vector3Int start, Vector3Int goal)
+    {
+        var openSet = new List<Node> { new Node(start, 0, Heuristic(start, goal), null) };
+        var closedSet = new HashSet<Vector3Int>();
+
+        while (openSet.Count > 0)
         {
-            open.Sort((a, b) => a.fCost.CompareTo(b.fCost));
-            var cur = open[0]; open.RemoveAt(0);
-            if (cur.position == goal) return Reconstruct(cur);
-            closed.Add(cur.position);
+            openSet.Sort((a, b) => a.fCost.CompareTo(b.fCost));
+            Node current = openSet[0];
+            openSet.RemoveAt(0);
+            if (current.position == goal) return ReconstructPath(current);
 
-            foreach (var d in _dirs)
+            closedSet.Add(current.position);
+            foreach (var dir in directions)
             {
-                var nxt = cur.position + d;
-                if (closed.Contains(nxt)) continue;
+                Vector3Int neighbor = current.position + dir;
+                if (closedSet.Contains(neighbor)) continue;
 
-                // world‐bounds
-                var wc = map.CellToWorld(nxt) + (Vector3)map.cellSize * 0.5f;
-                if (wc.x < minBounds.x + spriteExtents.x || wc.x > maxBounds.x - spriteExtents.x ||
-                   wc.y < minBounds.y + spriteExtents.y || wc.y > maxBounds.y - spriteExtents.y)
+                Vector3 center = tilemap.CellToWorld(neighbor) + (Vector3)tilemap.cellSize * 0.5f;
+                if (center.x < minBounds.x + spriteExtents.x ||
+                    center.x > maxBounds.x - spriteExtents.x ||
+                    center.y < minBounds.y + spriteExtents.y ||
+                    center.y > maxBounds.y - spriteExtents.y)
                     continue;
 
-                // corner‐cut prevention
-                if (d.x != 0 && d.y != 0)
+                if (dir.x != 0 && dir.y != 0)
                 {
-                    if (IsBlocked(map, cur.position + new Vector3Int(d.x, 0, 0), spriteExtents) &&
-                       IsBlocked(map, cur.position + new Vector3Int(0, d.y, 0), spriteExtents))
-                        continue;
+                    var side1 = current.position + new Vector3Int(dir.x, 0, 0);
+                    var side2 = current.position + new Vector3Int(0, dir.y, 0);
+                    if (IsBlocked(side1) || IsBlocked(side2)) continue;
                 }
 
-                if (IsBlocked(map, nxt, spriteExtents)) continue;
+                if (IsBlocked(neighbor)) continue;
 
-                float cost = (Mathf.Abs(d.x) + Mathf.Abs(d.y) == 2) ? 1.4142f : 1f;
-                float gNew = cur.gCost + cost;
-                var existing = open.Find(n => n.position == nxt);
+                float cost = (Mathf.Abs(dir.x) + Mathf.Abs(dir.y) == 2) ? 1.4142f : 1f;
+                float gNew = current.gCost + cost;
+
+                Node existing = openSet.Find(n => n.position == neighbor);
                 if (existing == null)
-                    open.Add(new Node(nxt, gNew, Heur(nxt, goal), cur));
+                    openSet.Add(new Node(neighbor, gNew, Heuristic(neighbor, goal), current));
                 else if (gNew < existing.gCost)
                 {
                     existing.gCost = gNew;
-                    existing.parent = cur;
+                    existing.parent = current;
                 }
             }
         }
-
         return new List<Vector3Int>();
     }
 
-    public static bool IsBlocked(Tilemap map, Vector3Int cell, Vector2 spriteExtents)
+    public bool IsBlocked(Vector3Int cell)
     {
-        var ctr = map.CellToWorld(cell) + (Vector3)map.cellSize * 0.5f;
-        var size = spriteExtents * 2f * 0.95f;
-        foreach (var hit in Physics2D.OverlapBoxAll(ctr, size, 0f))
-            if (!hit.isTrigger)
-                return true;
+        Vector3 center = tilemap.CellToWorld(cell) + (Vector3)tilemap.cellSize * 0.5f;
+        Vector2 checkSize = spriteExtents * 2f * 0.95f;
+        Collider2D[] hits = Physics2D.OverlapBoxAll(center, checkSize, 0f);
+        foreach (var hit in hits)
+            if (!hit.isTrigger) return true;
         return false;
     }
 
-    static List<Vector3Int> Reconstruct(Node n)
+    private List<Vector3Int> ReconstructPath(Node node)
     {
-        var r = new List<Vector3Int>();
-        while (n != null) { r.Add(n.position); n = n.parent; }
-        r.Reverse();
-        return r;
+        var result = new List<Vector3Int>();
+        while (node != null)
+        {
+            result.Add(node.position);
+            node = node.parent;
+        }
+        result.Reverse();
+        return result;
     }
 
-    static float Heur(Vector3Int a, Vector3Int b)
+    private float Heuristic(Vector3Int a, Vector3Int b)
     {
         int dx = Mathf.Abs(a.x - b.x), dy = Mathf.Abs(a.y - b.y);
         return Mathf.Max(dx, dy);
     }
 
-    class Node
+    private class Node
     {
         public Vector3Int position;
         public float gCost, hCost;
         public float fCost => gCost + hCost;
         public Node parent;
-        public Node(Vector3Int p, float g, float h, Node pr)
+        public Node(Vector3Int pos, float g, float h, Node p)
         {
-            position = p; gCost = g; hCost = h; parent = pr;
+            position = pos;
+            gCost = g;
+            hCost = h;
+            parent = p;
         }
     }
 }
