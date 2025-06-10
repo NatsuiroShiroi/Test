@@ -19,7 +19,7 @@ public class UnitOrderGiver : MonoBehaviour
         tilemap = tilemap ?? Object.FindFirstObjectByType<Tilemap>();
         if (background == null || tilemap == null)
         {
-            Debug.LogError("No background SpriteRenderer or Tilemap found. Assign in Inspector.");
+            //Debug.LogError("No background SpriteRenderer or Tilemap found. Assign in Inspector.");
             enabled = false;
             return;
         }
@@ -36,14 +36,18 @@ public class UnitOrderGiver : MonoBehaviour
 
     private void HandleClickToMove()
     {
-        if (!Input.GetMouseButtonDown(1)) hasIssuedMoveCommand = false;
+        if (!Input.GetMouseButtonDown(1))
+            hasIssuedMoveCommand = false;
+
         if (!hasIssuedMoveCommand && Input.GetMouseButtonDown(1))
         {
             hasIssuedMoveCommand = true;
+
             var selected = UnitSelector.GetSelectedUnits();
             int count = selected.Count;
             if (count == 0) return;
 
+            // World‐point under mouse
             Vector3 wp = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             wp.z = 0f;
             wp.x = Mathf.Clamp(wp.x, minBounds.x, maxBounds.x);
@@ -54,20 +58,35 @@ public class UnitOrderGiver : MonoBehaviour
             {
                 var selector = selected[i];
                 var mover = selector.GetComponent<UnitMover>();
-                float angle = 2 * Mathf.PI * i / count;
-                Vector3 offset = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0) * spread;
-                Vector3 targetWorld = wp + offset;
-                targetWorld.x = Mathf.Clamp(targetWorld.x,
-                    minBounds.x + selector.GetComponent<SpriteRenderer>().bounds.extents.x,
-                    maxBounds.x - selector.GetComponent<SpriteRenderer>().bounds.extents.x);
-                targetWorld.y = Mathf.Clamp(targetWorld.y,
-                    minBounds.y + selector.GetComponent<SpriteRenderer>().bounds.extents.y,
-                    maxBounds.y - selector.GetComponent<SpriteRenderer>().bounds.extents.y);
 
+                // Only fan out if more than one unit is selected
+                Vector3 offset = Vector3.zero;
+                if (count > 1)
+                {
+                    float angle = 2 * Mathf.PI * i / count;
+                    offset = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0f) * spread;
+                }
+
+                Vector3 targetWorld = wp + offset;
+                // Clamp per‐unit to keep sprite inside bounds
+                var extents = selector.GetComponent<SpriteRenderer>().bounds.extents;
+                targetWorld.x = Mathf.Clamp(
+                    targetWorld.x,
+                    minBounds.x + extents.x,
+                    maxBounds.x - extents.x
+                );
+                targetWorld.y = Mathf.Clamp(
+                    targetWorld.y,
+                    minBounds.y + extents.y,
+                    maxBounds.y - extents.y
+                );
+
+                // Compute grid path
                 Vector3Int startCell = tilemap.WorldToCell(mover.transform.position);
                 Vector3Int goalCell = tilemap.WorldToCell(targetWorld);
                 var cellPath = mover.Pathfinder.FindPath(startCell, goalCell);
 
+                // Build waypoints & initiate movement
                 mover.ClearPath();
                 foreach (var cell in cellPath)
                 {
