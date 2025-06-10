@@ -1,3 +1,4 @@
+// UnitMover.cs
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
@@ -9,13 +10,10 @@ public class UnitMover : MonoBehaviour
 
     [Tooltip("Units per second for your character")]
     public float moveSpeed = 5f;
-
     [Tooltip("Your background SpriteRenderer (optional if only one in scene)")]
     public SpriteRenderer background;
-
     [Tooltip("The Tilemap to use for pathfinding")]
     public Tilemap tilemap;
-
     [Tooltip("Shrink factor for obstacle overlap checks")]
     public float overlapShrink = 0.95f;
 
@@ -35,7 +33,6 @@ public class UnitMover : MonoBehaviour
         rb.gravityScale = 0f;
 
         spriteExtents = GetComponent<SpriteRenderer>().bounds.extents;
-
         var bg = background.bounds;
         minBounds = new Vector3(bg.min.x, bg.min.y, 0f);
         maxBounds = new Vector3(bg.max.x, bg.max.y, 0f);
@@ -46,13 +43,20 @@ public class UnitMover : MonoBehaviour
         hasDodged = false;
     }
 
-    public void SetDestination(Vector3 worldTarget)
+    public void SetDestination(Vector3 worldClick)
     {
-        // Clamp to background minus extents
-        worldTarget.x = Mathf.Clamp(worldTarget.x, minBounds.x + spriteExtents.x, maxBounds.x - spriteExtents.x);
-        worldTarget.y = Mathf.Clamp(worldTarget.y, minBounds.y + spriteExtents.y, maxBounds.y - spriteExtents.y);
-        destination = worldTarget;
+        // 1) Clamp the raw click into the allowed rectangle
+        worldClick.x = Mathf.Clamp(worldClick.x, minBounds.x + spriteExtents.x, maxBounds.x - spriteExtents.x);
+        worldClick.y = Mathf.Clamp(worldClick.y, minBounds.y + spriteExtents.y, maxBounds.y - spriteExtents.y);
 
+        // 2) Snap to the center of the clicked tile
+        Vector3Int destCell = tilemap.WorldToCell(worldClick);
+        Vector3 destCenter = tilemap.GetCellCenterWorld(destCell);
+        destCenter.z = 0f;
+        destination = destCenter;
+        Debug.Log($"{name}.SetDestination snapped to cell {destCell} => {destination}");
+
+        // 3) Rebuild path between cell centers
         BuildPath();
         targetIndex = 0;
         hasDodged = false;
@@ -60,13 +64,21 @@ public class UnitMover : MonoBehaviour
 
     void BuildPath()
     {
+        // compute grid cells
         var start = tilemap.WorldToCell(transform.position);
         var goal = tilemap.WorldToCell(destination);
 
-        var cells = Pathfinder.FindPath(
-            tilemap, start, goal,
-            spriteExtents, minBounds, maxBounds
-        );
+        // if clicking the same cell you’re in, clear path and exit
+        if (start == goal)
+        {
+            path.Clear();
+            Debug.Log($"{name}.BuildPath: start==goal at {start}, clearing path");
+            return;
+        }
+
+        // otherwise run A* as before
+        var cells = Pathfinder.FindPath(tilemap, start, goal,
+                                        spriteExtents, minBounds, maxBounds);
 
         path.Clear();
         foreach (var c in cells)
@@ -75,15 +87,18 @@ public class UnitMover : MonoBehaviour
             w.z = 0f;
             path.Add(w);
         }
+
+        Debug.Log($"{name}.BuildPath → {path.Count} waypoints");
     }
+
 
     void FixedUpdate()
     {
-        // Rebuild if path exhausted but not at destination
         if (targetIndex >= path.Count)
         {
             if (Vector3.Distance(transform.position, destination) > 0.01f)
             {
+                Debug.Log($"UnitMover: {name} rebuilding path mid-move");
                 BuildPath();
                 targetIndex = 0;
                 hasDodged = false;
@@ -96,7 +111,6 @@ public class UnitMover : MonoBehaviour
         Vector3 targetPos = path[targetIndex];
         Vector3Int tCell = tilemap.WorldToCell(targetPos);
 
-        // Blocked by another mover?
         if (Pathfinder.IsBlocked(tilemap, tCell, spriteExtents * overlapShrink))
         {
             var blocker = FindBlockingMover(tCell);
@@ -112,7 +126,7 @@ public class UnitMover : MonoBehaviour
                 }
                 else
                 {
-                    // still blocked after dodge: re-plan
+                    Debug.Log($"UnitMover: {name} re-planning after dodge");
                     mover.BuildPath();
                     mover.targetIndex = 0;
                     mover.hasDodged = false;
@@ -121,26 +135,23 @@ public class UnitMover : MonoBehaviour
             return;
         }
 
-        // Move toward next waypoint
+        // robust movement
         Vector2 cur = rb.position;
-        Vector2 dir = (Vector2)targetPos - cur;
+        Vector2 targ2 = (Vector2)targetPos;
         float step = moveSpeed * Time.fixedDeltaTime;
+        Vector2 newPos = Vector2.MoveTowards(cur, targ2, step);
 
-        if (dir.magnitude <= step)
-        {
-            rb.MovePosition(targetPos);
+        rb.MovePosition(newPos);
+
+        if (newPos == targ2)
             targetIndex++;
-        }
-        else
-        {
-            rb.MovePosition(cur + dir.normalized * step);
-        }
     }
 
     private UnitMover FindBlockingMover(Vector3Int cell)
     {
         Vector3 worldC = tilemap.CellToWorld(cell) + (Vector3)tilemap.cellSize * 0.5f;
         var hits = Physics2D.OverlapBoxAll(worldC, spriteExtents * 2f * overlapShrink, 0f);
+
         foreach (var h in hits)
         {
             if (h.isTrigger || h.gameObject == gameObject) continue;
@@ -166,7 +177,7 @@ public class UnitMover : MonoBehaviour
 
         var diag = new Vector3Int(dir.x + perp.x, dir.y + perp.y, 0);
         var nc = cc + diag;
-        Vector3 wnc = tilemap.GetCellCenterWorld(nc);
+        var wnc = tilemap.GetCellCenterWorld(nc);
         wnc.z = 0f;
 
         if (wnc.x >= minBounds.x + spriteExtents.x &&
