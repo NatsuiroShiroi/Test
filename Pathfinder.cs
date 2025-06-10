@@ -11,6 +11,7 @@ public class Pathfinder
     private Vector3 minBounds;
     private Vector3 maxBounds;
     private Vector2 spriteExtents;
+    private GameObject owner;
 
     private static readonly Vector3Int[] directions = {
         new Vector3Int(1, 0, 0), new Vector3Int(-1, 0, 0),
@@ -19,12 +20,13 @@ public class Pathfinder
         new Vector3Int(-1, 1, 0), new Vector3Int(-1,-1, 0)
     };
 
-    public Pathfinder(Tilemap tilemap, Vector3 minBounds, Vector3 maxBounds, Vector2 spriteExtents)
+    public Pathfinder(Tilemap tilemap, Vector3 minBounds, Vector3 maxBounds, Vector2 spriteExtents, GameObject owner)
     {
         this.tilemap = tilemap;
         this.minBounds = minBounds;
         this.maxBounds = maxBounds;
         this.spriteExtents = spriteExtents;
+        this.owner = owner;
     }
 
     public List<Vector3Int> FindPath(Vector3Int start, Vector3Int goal)
@@ -83,7 +85,11 @@ public class Pathfinder
         Vector2 checkSize = spriteExtents * 2f * 0.95f;
         Collider2D[] hits = Physics2D.OverlapBoxAll(center, checkSize, 0f);
         foreach (var hit in hits)
-            if (!hit.isTrigger) return true;
+        {
+            // skip your own collider
+            if (!hit.isTrigger && hit.gameObject != owner)
+                return true;
+        }
         return false;
     }
 
