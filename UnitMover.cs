@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
@@ -12,12 +13,19 @@ public class UnitMover : MonoBehaviour
     private Rigidbody2D rb;
     private FlowField currentField;
 
-    [Tooltip("Tilemap used to convert cells ↔ world positions")]
+    [Tooltip("Tilemap used for cell↔world conversions")]
     public Tilemap tilemap;
 
+    // Movement state
     private bool isMoving;
     private Vector3Int currentCell;
     private Vector3 targetCenter;
+
+    // --- Reservation system, reset and populated each FixedUpdate ---
+    private static HashSet<Vector3Int> reserved = new HashSet<Vector3Int>();
+    private static int lastFrame = -1;
+    // Track all active movers
+    private static List<UnitMover> allMovers = new List<UnitMover>();
 
     void Awake()
     {
@@ -25,6 +33,13 @@ public class UnitMover : MonoBehaviour
         rb.bodyType = RigidbodyType2D.Kinematic;
         rb.freezeRotation = true;
         GetComponent<Collider2D>().isTrigger = true;
+
+        allMovers.Add(this);
+    }
+
+    void OnDestroy()
+    {
+        allMovers.Remove(this);
     }
 
     void Start()
@@ -34,6 +49,9 @@ public class UnitMover : MonoBehaviour
             Debug.LogError($"UnitMover '{name}': no Tilemap assigned or found!");
     }
 
+    /// <summary>
+    /// Called by UnitOrderGiver when a new FlowField is ready.
+    /// </summary>
     public void ApplyFlowField(FlowField field)
     {
         currentField = field;
@@ -43,110 +61,63 @@ public class UnitMover : MonoBehaviour
 
     void FixedUpdate()
     {
-        if (currentField == null || tilemap == null) return;
+        // 1) Once per physics tick, reset & fill reservations with each mover's currentCell
+        if (lastFrame != Time.frameCount)
+        {
+            lastFrame = Time.frameCount;
+            reserved.Clear();
+            foreach (var m in allMovers)
+                reserved.Add(m.currentCell);
+        }
 
-        // 1) Continue any in-progress move
+        if (currentField == null || tilemap == null)
+            return;
+
+        // 2) If already heading to a center, keep going
         if (isMoving)
         {
             StepTowardCenter();
             return;
         }
 
-        // 2) Sample flow-field
+        // 3) Sample the flow‐field
         Vector2 dir = currentField.GetDirection(transform.position);
         if (dir == Vector2.zero)
         {
-            currentField = null; // done or unreachable
+            // Arrived or unreachable
+            currentField = null;
             return;
         }
 
-        // 3) Quantize direction
+        // 4) Quantize to one of 8 grid directions
         Vector2Int q = new Vector2Int(
             Mathf.RoundToInt(dir.x),
             Mathf.RoundToInt(dir.y)
         );
         if (q == Vector2Int.zero) return;
 
-        // 4) Compute next cell
+        // 5) Compute desired next cell
         currentCell = tilemap.WorldToCell(transform.position);
-        Vector3Int desiredCell = new Vector3Int(
+        var desired = new Vector3Int(
             currentCell.x + q.x,
             currentCell.y + q.y,
             currentCell.z
         );
 
-        // 5) Try to step into desiredCell
-        if (TryMoveToCell(desiredCell))
+        // 6) If that cell is already in reserved, skip movement
+        if (reserved.Contains(desired))
             return;
 
-        // 6) If blocked, attempt a local detour
-        Vector3Int detourCell;
-        if (ComputeDetourCell(currentCell, q, out detourCell))
-        {
-            // detour found
-            BeginMoveTo(detourCell);
-        }
-        // else no detour → wait here
-    }
-
-    private bool TryMoveToCell(Vector3Int cell)
-    {
-        Vector3 center = tilemap.GetCellCenterWorld(cell);
-        center.z = transform.position.z;
-        if (Physics2D.OverlapPoint(center) != null)
-            return false;
-
-        BeginMoveTo(cell);
-        return true;
-    }
-
-    private void BeginMoveTo(Vector3Int cell)
-    {
-        targetCenter = tilemap.GetCellCenterWorld(cell);
+        // 7) Otherwise reserve & begin moving there
+        reserved.Add(desired);
+        targetCenter = tilemap.GetCellCenterWorld(desired);
         targetCenter.z = transform.position.z;
         isMoving = true;
     }
 
-    private bool ComputeDetourCell(Vector3Int origin, Vector2Int q, out Vector3Int detour)
-    {
-        // diagonal move? try cardinals first
-        if (q.x != 0 && q.y != 0)
-        {
-            var c1 = new Vector3Int(origin.x + q.x, origin.y, origin.z);
-            if (TryCellFree(c1)) { detour = c1; return true; }
-            var c2 = new Vector3Int(origin.x, origin.y + q.y, origin.z);
-            if (TryCellFree(c2)) { detour = c2; return true; }
-        }
-        else
-        {
-            // cardinal move? try both diagonals
-            if (q.x != 0)
-            {
-                var d1 = new Vector3Int(origin.x + q.x, origin.y + 1, origin.z);
-                if (TryCellFree(d1)) { detour = d1; return true; }
-                var d2 = new Vector3Int(origin.x + q.x, origin.y - 1, origin.z);
-                if (TryCellFree(d2)) { detour = d2; return true; }
-            }
-            else // q.y != 0
-            {
-                var d1 = new Vector3Int(origin.x + 1, origin.y + q.y, origin.z);
-                if (TryCellFree(d1)) { detour = d1; return true; }
-                var d2 = new Vector3Int(origin.x - 1, origin.y + q.y, origin.z);
-                if (TryCellFree(d2)) { detour = d2; return true; }
-            }
-        }
-
-        detour = origin;
-        return false;
-    }
-
-    private bool TryCellFree(Vector3Int cell)
-    {
-        Vector3 center = tilemap.GetCellCenterWorld(cell);
-        center.z = transform.position.z;
-        return Physics2D.OverlapPoint(center) == null;
-    }
-
+    /// <summary>
+    /// Smoothly moves toward targetCenter, snapping when close enough.
+    /// </summary>
     private void StepTowardCenter()
     {
         Vector2 pos = rb.position;
@@ -155,11 +126,14 @@ public class UnitMover : MonoBehaviour
 
         if (toC.magnitude <= SnapThreshold)
         {
+            // Snap exactly, update currentCell, stop
             rb.MovePosition(targetCenter);
             isMoving = false;
+            currentCell = tilemap.WorldToCell(transform.position);
         }
         else
         {
+            // Move partway
             rb.MovePosition(pos + toC.normalized * step);
         }
     }
