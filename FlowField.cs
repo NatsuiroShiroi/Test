@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.Tilemaps;
 
 /// <summary>
-/// Generates a flow-field (vector field) from any target cell over a rectangular area.
+/// Generates a flow‐field that points every cell toward the target.
 /// </summary>
 public class FlowField
 {
@@ -13,15 +13,14 @@ public class FlowField
     private Vector3 origin;
     private float cellSize;
 
-    /// <summary>World-space origin (bounds.min) of the last generated field.</summary>
+    /// <summary>Lower‐left corner of the field in world space.</summary>
     public Vector3 Origin => origin;
-    /// <summary>Size of each grid cell in world units.</summary>
+    /// <summary>Size of each cell in world units.</summary>
     public float CellSize => cellSize;
 
     /// <summary>
-    /// Builds the flow-field over the given world-space bounds (min at bounds.min,
-    /// size = bounds.size), using uniform square cells of side length cellSize,
-    /// all pointing toward targetWorld.
+    /// Primary generator: builds a field over 'bounds' with square cells of side 'cellSize',
+    /// all directing toward 'targetWorld'.
     /// </summary>
     public void Generate(Bounds bounds, float cellSize, Vector3 targetWorld)
     {
@@ -30,8 +29,13 @@ public class FlowField
         width = Mathf.CeilToInt(bounds.size.x / cellSize);
         height = Mathf.CeilToInt(bounds.size.y / cellSize);
 
-        // (… your existing distance-map + vector-map build code goes here …)
-        // You don’t have to change anything below; it just uses origin, cellSize, width, height, and targetWorld.
+        if (width <= 0 || height <= 0)
+        {
+            directions = null;
+            return;
+        }
+
+        // 1) Build distance map (reverse Dijkstra)
         float[,] dist = new float[width, height];
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
@@ -40,26 +44,30 @@ public class FlowField
         int tx = Mathf.FloorToInt((targetWorld.x - origin.x) / cellSize);
         int ty = Mathf.FloorToInt((targetWorld.y - origin.y) / cellSize);
         if (tx < 0 || ty < 0 || tx >= width || ty >= height)
+        {
+            directions = null;
             return;
+        }
 
         var queue = new Queue<Vector2Int>();
         dist[tx, ty] = 0f;
         queue.Enqueue(new Vector2Int(tx, ty));
 
         var dirs4 = new[] {
-            new Vector2Int(1, 0), new Vector2Int(-1, 0),
-            new Vector2Int(0, 1), new Vector2Int(0, -1)
+            new Vector2Int(1, 0),  new Vector2Int(-1, 0),
+            new Vector2Int(0, 1),  new Vector2Int(0, -1)
         };
         var dirs8 = new[] {
-            new Vector2Int(1, 1), new Vector2Int(1, -1),
-            new Vector2Int(-1, 1),new Vector2Int(-1, -1)
+            new Vector2Int(1, 1),  new Vector2Int(1, -1),
+            new Vector2Int(-1, 1), new Vector2Int(-1, -1)
         };
 
         while (queue.Count > 0)
         {
             var cell = queue.Dequeue();
             float cd = dist[cell.x, cell.y];
-            // cardinal neighbours
+
+            // Cardinal moves
             foreach (var d in dirs4)
             {
                 int nx = cell.x + d.x, ny = cell.y + d.y;
@@ -71,7 +79,8 @@ public class FlowField
                     queue.Enqueue(new Vector2Int(nx, ny));
                 }
             }
-            // diagonal neighbours
+
+            // Diagonals
             foreach (var d in dirs8)
             {
                 int nx = cell.x + d.x, ny = cell.y + d.y;
@@ -85,9 +94,10 @@ public class FlowField
             }
         }
 
-        // build the vector field
+        // 2) Convert distances to direction vectors
         directions = new Vector2[width, height];
         for (int x = 0; x < width; x++)
+        {
             for (int y = 0; y < height; y++)
             {
                 if (dist[x, y] == float.MaxValue)
@@ -95,10 +105,11 @@ public class FlowField
                     directions[x, y] = Vector2.zero;
                     continue;
                 }
+
                 float best = dist[x, y];
                 Vector2 bestDir = Vector2.zero;
 
-                // pick neighbour with smallest distance
+                // Find neighbor with smallest dist
                 foreach (var d in dirs4)
                 {
                     int nx = x + d.x, ny = y + d.y;
@@ -119,34 +130,38 @@ public class FlowField
                         bestDir = d;
                     }
                 }
+
                 directions[x, y] = bestDir.normalized;
             }
+        }
     }
 
     /// <summary>
-    /// NEW OVERLOAD: Build the flow‐field over the entire Tilemap’s cellBounds,
-    /// pointing toward the given targetCell.
+    /// Tilemap‐based overload: builds the same field over your Tilemap.cellBounds,
+    /// pointing toward the center of 'targetCell'.
     /// </summary>
     public void Generate(Tilemap tilemap, Vector3Int targetCell)
     {
-        var cb = tilemap.cellBounds;                       // integer cell bounds
-        float cs = tilemap.cellSize.x;                     // assume square cells
-        Vector3 originWs = tilemap.CellToWorld(cb.min);    // bottom-left corner in world
-        // world-space size = number of cells * cellSize
+        // Compute world‐space bounds from cellBounds
+        var cb = tilemap.cellBounds;
+        float cs = tilemap.cellSize.x;
+        Vector3 originWs = tilemap.CellToWorld(cb.min);
         Bounds worldBounds = new Bounds
         {
             min = originWs,
             size = new Vector3(cb.size.x * cs, cb.size.y * cs, 0f)
         };
-        // Use the cell‐center as the world “target”
+
+        // Use actual cell center as the world‐space goal
         Vector3 targetWorld = tilemap.GetCellCenterWorld(targetCell);
 
-        // Delegate to the original implementation
+        // Delegate
         Generate(worldBounds, cs, targetWorld);
     }
 
     /// <summary>
-    /// Returns the unit-vector toward the goal from worldPos, or zero if at goal/out of bounds.
+    /// After generating, sample this to get the unit‐vector
+    /// pointing from worldPos toward the goal. Zero means “at goal or unreachable.”
     /// </summary>
     public Vector2 GetDirection(Vector3 worldPos)
     {
