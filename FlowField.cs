@@ -3,101 +3,74 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
-/// <summary>
-/// Generates a flow‐field that points every cell toward the target.
-/// </summary>
 public class FlowField
 {
     private Vector2[,] directions;
     private int width, height;
     private Vector3 origin;
     private float cellSize;
-
-    /// <summary>Lower‐left corner of the field in world space.</summary>
-    public Vector3 Origin => origin;
-    /// <summary>Size of each cell in world units.</summary>
-    public float CellSize => cellSize;
+    private Tilemap tilemap;
 
     /// <summary>
-    /// Primary generator: builds a field over 'bounds' with square cells of side 'cellSize',
-    /// all directing toward 'targetWorld'.
+    /// Builds the field over your Tilemap.cellBounds, pointing every cell 
+    /// toward the center of targetCell, but never through non-trigger colliders.
     /// </summary>
-    public void Generate(Bounds bounds, float cellSize, Vector3 targetWorld)
+    public void Generate(Tilemap tilemap, Vector3Int targetCell)
     {
-        origin = bounds.min;
-        this.cellSize = cellSize;
-        width = Mathf.CeilToInt(bounds.size.x / cellSize);
-        height = Mathf.CeilToInt(bounds.size.y / cellSize);
+        this.tilemap = tilemap;
+        var cb = tilemap.cellBounds;
+        width = cb.size.x;
+        height = cb.size.y;
+        origin = tilemap.CellToWorld(cb.min);
+        cellSize = tilemap.cellSize.x;
 
-        if (width <= 0 || height <= 0)
-        {
-            directions = null;
-            return;
-        }
-
-        // 1) Build distance map (reverse Dijkstra)
-        float[,] dist = new float[width, height];
+        // init distances
+        var dist = new float[width, height];
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
                 dist[x, y] = float.MaxValue;
 
-        int tx = Mathf.FloorToInt((targetWorld.x - origin.x) / cellSize);
-        int ty = Mathf.FloorToInt((targetWorld.y - origin.y) / cellSize);
+        // convert targetCell → local coords
+        int tx = targetCell.x - cb.min.x;
+        int ty = targetCell.y - cb.min.y;
         if (tx < 0 || ty < 0 || tx >= width || ty >= height)
         {
             directions = null;
             return;
         }
 
-        var queue = new Queue<Vector2Int>();
+        // BFS / Dijkstra
+        var queue = new Queue<Vector3Int>();
         dist[tx, ty] = 0f;
-        queue.Enqueue(new Vector2Int(tx, ty));
+        queue.Enqueue(targetCell);
 
         var dirs4 = new[] {
-            new Vector2Int(1, 0),  new Vector2Int(-1, 0),
-            new Vector2Int(0, 1),  new Vector2Int(0, -1)
+            new Vector3Int(1, 0, 0),  new Vector3Int(-1, 0, 0),
+            new Vector3Int(0, 1, 0),  new Vector3Int(0, -1, 0)
         };
         var dirs8 = new[] {
-            new Vector2Int(1, 1),  new Vector2Int(1, -1),
-            new Vector2Int(-1, 1), new Vector2Int(-1, -1)
+            new Vector3Int(1, 1, 0),  new Vector3Int(1, -1, 0),
+            new Vector3Int(-1, 1, 0), new Vector3Int(-1, -1, 0)
         };
 
         while (queue.Count > 0)
         {
             var cell = queue.Dequeue();
-            float cd = dist[cell.x, cell.y];
+            int cx = cell.x - cb.min.x, cy = cell.y - cb.min.y;
+            float cd = dist[cx, cy];
 
-            // Cardinal moves
+            // check 4 cardinals
             foreach (var d in dirs4)
-            {
-                int nx = cell.x + d.x, ny = cell.y + d.y;
-                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                float cost = 1f;
-                if (dist[nx, ny] > cd + cost)
-                {
-                    dist[nx, ny] = cd + cost;
-                    queue.Enqueue(new Vector2Int(nx, ny));
-                }
-            }
+                TryRelax(cell, d, cb, cd, dist, queue, 1f);
 
-            // Diagonals
+            // check diagonals
             foreach (var d in dirs8)
-            {
-                int nx = cell.x + d.x, ny = cell.y + d.y;
-                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                float cost = 1.4142f;
-                if (dist[nx, ny] > cd + cost)
-                {
-                    dist[nx, ny] = cd + cost;
-                    queue.Enqueue(new Vector2Int(nx, ny));
-                }
-            }
+                TryRelax(cell, d, cb, cd, dist, queue, 1.4142f);
         }
 
-        // 2) Convert distances to direction vectors
+        // build vector field
         directions = new Vector2[width, height];
         for (int x = 0; x < width; x++)
-        {
             for (int y = 0; y < height; y++)
             {
                 if (dist[x, y] == float.MaxValue)
@@ -109,59 +82,70 @@ public class FlowField
                 float best = dist[x, y];
                 Vector2 bestDir = Vector2.zero;
 
-                // Find neighbor with smallest dist
+                // among 8 neighbors, find one with strictly smaller dist
                 foreach (var d in dirs4)
-                {
-                    int nx = x + d.x, ny = y + d.y;
-                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                    if (dist[nx, ny] < best)
-                    {
-                        best = dist[nx, ny];
-                        bestDir = d;
-                    }
-                }
+                    PickBest(d, x, y, cb, dist, ref best, ref bestDir);
                 foreach (var d in dirs8)
-                {
-                    int nx = x + d.x, ny = y + d.y;
-                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                    if (dist[nx, ny] < best)
-                    {
-                        best = dist[nx, ny];
-                        bestDir = d;
-                    }
-                }
+                    PickBest(d, x, y, cb, dist, ref best, ref bestDir);
 
                 directions[x, y] = bestDir.normalized;
             }
+    }
+
+    private void TryRelax(
+        Vector3Int cell,
+        Vector3Int dir,
+        BoundsInt cb,
+        float cd,
+        float[,] dist,
+        Queue<Vector3Int> queue,
+        float cost
+    )
+    {
+        var nc = cell + dir;
+        int nx = nc.x - cb.min.x, ny = nc.y - cb.min.y;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+
+        // ** static obstacle check **
+        Vector3 worldC = tilemap.CellToWorld(nc)
+                       + (Vector3)tilemap.cellSize * 0.5f;
+        var hits = Physics2D.OverlapBoxAll(
+            worldC,
+            tilemap.cellSize * 0.9f,
+            0f
+        );
+        foreach (var h in hits)
+            if (!h.isTrigger)  // blocked by a wall/obstacle
+                return;
+
+        if (dist[nx, ny] > cd + cost)
+        {
+            dist[nx, ny] = cd + cost;
+            queue.Enqueue(nc);
+        }
+    }
+
+    private void PickBest(
+        Vector3Int d,
+        int x, int y,
+        BoundsInt cb,
+        float[,] dist,
+        ref float best,
+        ref Vector2 bestDir
+    )
+    {
+        int nx = x + d.x, ny = y + d.y;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+        if (dist[nx, ny] < best)
+        {
+            best = dist[nx, ny];
+            bestDir = new Vector2(d.x, d.y);
         }
     }
 
     /// <summary>
-    /// Tilemap‐based overload: builds the same field over your Tilemap.cellBounds,
-    /// pointing toward the center of 'targetCell'.
-    /// </summary>
-    public void Generate(Tilemap tilemap, Vector3Int targetCell)
-    {
-        // Compute world‐space bounds from cellBounds
-        var cb = tilemap.cellBounds;
-        float cs = tilemap.cellSize.x;
-        Vector3 originWs = tilemap.CellToWorld(cb.min);
-        Bounds worldBounds = new Bounds
-        {
-            min = originWs,
-            size = new Vector3(cb.size.x * cs, cb.size.y * cs, 0f)
-        };
-
-        // Use actual cell center as the world‐space goal
-        Vector3 targetWorld = tilemap.GetCellCenterWorld(targetCell);
-
-        // Delegate
-        Generate(worldBounds, cs, targetWorld);
-    }
-
-    /// <summary>
-    /// After generating, sample this to get the unit‐vector
-    /// pointing from worldPos toward the goal. Zero means “at goal or unreachable.”
+    /// Returns the unit‐vector pointing from worldPos *toward*
+    /// the goal, or zero if at goal/unreachable/out-of-bounds.
     /// </summary>
     public Vector2 GetDirection(Vector3 worldPos)
     {
