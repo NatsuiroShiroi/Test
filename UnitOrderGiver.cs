@@ -1,12 +1,13 @@
 using UnityEngine;
-using UnityEngine.Tilemaps;
 
 /// <summary>
-/// Generates a global flow field on right-click and broadcasts it to all units.
+/// Generates a global flow field on right-click using a SpriteRenderer bounds grid.
 /// </summary>
 public class UnitOrderGiver : MonoBehaviour
 {
-    [Tooltip("Tilemap used for pathfinding")] public Tilemap tilemap;
+    [Tooltip("Background SpriteRenderer defining play area")] public SpriteRenderer background;
+    [Tooltip("Size of each grid cell in world units")] public float cellSize = 1f;
+
     private FlowField flowField = new FlowField();
 
     void Update()
@@ -15,15 +16,12 @@ public class UnitOrderGiver : MonoBehaviour
         {
             Vector3 wp = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             wp.z = 0f;
-            Vector3Int targetCell = tilemap.WorldToCell(wp);
-            flowField.Generate(tilemap, targetCell);
 
-            // Broadcast to all movers
-            foreach (var mover in UnitSelector.GetSelectedUnits())
-            {
-                var m = mover.GetComponent<UnitMover>();
-                m.ApplyFlowField(flowField);
-            }
+            Bounds b = background.bounds;
+            flowField.Generate(b, cellSize, wp);
+
+            foreach (var sel in UnitSelector.GetSelectedUnits())
+                sel.GetComponent<UnitMover>().ApplyFlowField(flowField);
         }
     }
 }
