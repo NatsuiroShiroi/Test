@@ -1,9 +1,8 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Tilemaps;
 
 /// <summary>
-/// Generates a flow field (vector field) from any target cell on the tilemap.
+/// Generates a flow field (vector field) from any target world position over a rectangular area.
 /// </summary>
 public class FlowField
 {
@@ -12,56 +11,71 @@ public class FlowField
     private Vector3 origin;
     private float cellSize;
 
-    public void Generate(Tilemap tilemap, Vector3Int targetCell)
-    {
-        var bounds = tilemap.cellBounds;
-        width = bounds.size.x;
-        height = bounds.size.y;
-        origin = tilemap.CellToWorld(bounds.min);
-        cellSize = tilemap.cellSize.x; // assume square cells
+    /// <summary>
+    /// World-space origin of the grid (bottom-left corner).
+    /// </summary>
+    public Vector3 Origin => origin;
+    /// <summary>
+    /// Size of each square cell.
+    /// </summary>
+    public float CellSize => cellSize;
 
-        // distance field
+    /// <summary>
+    /// Generate the flow field over the given bounds with a uniform grid cellSize, pointing toward targetWorld.
+    /// </summary>
+    public void Generate(Bounds bounds, float cellSize, Vector3 targetWorld)
+    {
+        origin = bounds.min;
+        this.cellSize = cellSize;
+        width = Mathf.CeilToInt(bounds.size.x / cellSize);
+        height = Mathf.CeilToInt(bounds.size.y / cellSize);
+
         float[,] dist = new float[width, height];
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
                 dist[x, y] = float.MaxValue;
 
-        var queue = new Queue<Vector3Int>();
-        int tx = targetCell.x - bounds.min.x;
-        int ty = targetCell.y - bounds.min.y;
+        int tx = Mathf.FloorToInt((targetWorld.x - origin.x) / cellSize);
+        int ty = Mathf.FloorToInt((targetWorld.y - origin.y) / cellSize);
         if (tx < 0 || ty < 0 || tx >= width || ty >= height) return;
-        dist[tx, ty] = 0f;
-        queue.Enqueue(targetCell);
 
-        Vector3Int[] dirs = new Vector3Int[] {
-            new Vector3Int(1,0,0), new Vector3Int(-1,0,0),
-            new Vector3Int(0,1,0), new Vector3Int(0,-1,0),
-            new Vector3Int(1,1,0), new Vector3Int(1,-1,0), new Vector3Int(-1,1,0), new Vector3Int(-1,-1,0)
-        };
+        var dirs4 = new Vector2Int[] { new Vector2Int(1, 0), new Vector2Int(-1, 0), new Vector2Int(0, 1), new Vector2Int(0, -1) };
+        var dirs8 = new Vector2Int[] { new Vector2Int(1, 1), new Vector2Int(1, -1), new Vector2Int(-1, 1), new Vector2Int(-1, -1) };
+
+        var queue = new Queue<Vector2Int>();
+        dist[tx, ty] = 0f;
+        queue.Enqueue(new Vector2Int(tx, ty));
 
         while (queue.Count > 0)
         {
             var cell = queue.Dequeue();
-            int cx = cell.x - bounds.min.x;
-            int cy = cell.y - bounds.min.y;
-            float cd = dist[cx, cy];
-            foreach (var d in dirs)
+            float cd = dist[cell.x, cell.y];
+            // 4-way neighbors
+            foreach (var d in dirs4)
             {
-                var nc = cell + d;
-                int nx = nc.x - bounds.min.x;
-                int ny = nc.y - bounds.min.y;
+                int nx = cell.x + d.x, ny = cell.y + d.y;
                 if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-                if (tilemap.HasTile(nc) == false) continue; // skip empty
-                float cost = (d.x != 0 && d.y != 0) ? 1.4142f : 1f;
+                float cost = 1f;
                 if (dist[nx, ny] > cd + cost)
                 {
                     dist[nx, ny] = cd + cost;
-                    queue.Enqueue(nc);
+                    queue.Enqueue(new Vector2Int(nx, ny));
+                }
+            }
+            // 8-way neighbors
+            foreach (var d in dirs8)
+            {
+                int nx = cell.x + d.x, ny = cell.y + d.y;
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                float cost = 1.4142f;
+                if (dist[nx, ny] > cd + cost)
+                {
+                    dist[nx, ny] = cd + cost;
+                    queue.Enqueue(new Vector2Int(nx, ny));
                 }
             }
         }
 
-        // build vector field
         directions = new Vector2[width, height];
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
@@ -71,15 +85,21 @@ public class FlowField
                     directions[x, y] = Vector2.zero;
                     continue;
                 }
-                Vector3Int cell = new Vector3Int(x + bounds.min.x, y + bounds.min.y, 0);
-                float best = dist[x, y];
                 Vector2 bestDir = Vector2.zero;
-
-                foreach (var d in dirs)
+                float best = dist[x, y];
+                foreach (var d in dirs4)
                 {
-                    var nc = cell + d;
-                    int nx = nc.x - bounds.min.x;
-                    int ny = nc.y - bounds.min.y;
+                    int nx = x + d.x, ny = y + d.y;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                    if (dist[nx, ny] < best)
+                    {
+                        best = dist[nx, ny];
+                        bestDir = new Vector2(d.x, d.y);
+                    }
+                }
+                foreach (var d in dirs8)
+                {
+                    int nx = x + d.x, ny = y + d.y;
                     if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
                     if (dist[nx, ny] < best)
                     {
@@ -92,7 +112,7 @@ public class FlowField
     }
 
     /// <summary>
-    /// Returns the direction vector at world position.
+    /// Returns the direction at a given world position (or zero if at goal or out of bounds).
     /// </summary>
     public Vector2 GetDirection(Vector3 worldPos)
     {
